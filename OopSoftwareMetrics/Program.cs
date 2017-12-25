@@ -43,6 +43,7 @@ namespace OopSoftwareMetrics
 
             x.Stop();
             WriteLine($"Counted by that time - {x.ElapsedMilliseconds} ms");
+            ReadLine();
         }
 
         private static void OutputMetrics(string input, Metrics metrics)
