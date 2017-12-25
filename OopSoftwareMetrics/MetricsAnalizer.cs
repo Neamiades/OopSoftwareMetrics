@@ -1,87 +1,180 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
+using System.Linq;
+using System.Reflection;
 
 namespace OopSoftwareMetrics
 {
-    class MetricsAnalizer
+    static class MetricsAnalizer
     {
-        private Dictionary<string, ClassNode> _classes;
+        private static readonly Object _thisLock = new Object();
 
-        private readonly ClassNode _root;
-
-        private readonly Object _thisLock = new Object();
-
-        private const string Pattern = @"class\s*(\w+)(?:<\s*\w+(?:\s*,\s*\w+)*>)?(?:\s*:\s*(\w+))?";
-
-        private readonly Regex _regex = new Regex(Pattern);
-
-        public MetricsAnalizer()
+        private static int GetDIT(Assembly assembly)
         {
-            _root = new ClassNode(null);
-            _classes = new Dictionary<string, ClassNode>();
-        }
+            var DIT = 0;
 
-        public void GetModuleMetrics(string pathToModule)
-        {
-            var dirInfo = new DirectoryInfo(pathToModule);
-
-
-            foreach (var file in Directory.GetFiles(dirInfo.FullName, "*.cs"))
-                GetClassTree(file);
-
-            foreach (var directory in Directory.GetDirectories(dirInfo.FullName))
-                GetModuleMetrics(directory);
-
-            //Parallel.ForEach(Directory.GetFiles(dirInfo.FullName, "*.cs"), GetClassTree);
-            //Parallel.ForEach(Directory.GetDirectories(dirInfo.FullName), GetModuleMetrics);
-        }
-
-        private void GetClassTree(string pathToFile)
-        {
-            using (var streamReader = new StreamReader(pathToFile))
+            foreach (Type type in assembly.GetTypes())
             {
-                string file = streamReader.ReadToEnd();
+                var depth = 0;
+                for (var current = type.BaseType; current != null; current = current.BaseType, depth++);
 
-                foreach (Match match in _regex.Matches(file))
-                {
-                    if (!String.IsNullOrEmpty(match.Groups[2].Value) && !match.Groups[2].Value.StartsWith("I"))
-                    {
-                        lock (_thisLock)
-                        {
-                            ClassNode classNode;
-                            if ((classNode = _root.FindChild(match.Groups[2].Value)) != null)
-                            {
-                                if (classNode.ContainsChild(match.Groups[1].Value))
-                                    continue;
-
-                                classNode.AddChild(match.Groups[1].Value);
-                            }
-                            else if ((classNode = _root.FindChild(match.Groups[1].Value)) != null)
-                            {
-                                _root.AddChild(match.Groups[2].Value)
-                                    .AddChild(classNode, match.Groups[1].Value);
-
-                                _root.RemoveChild(match.Groups[1].Value);
-                            }
-                            else
-                            {
-                                _root.AddChild(match.Groups[2].Value).AddChild(match.Groups[1].Value);
-                            }
-                        }
-                    }
-                    else lock (_thisLock)
-                    {
-                        if (_root.FindChild(match.Groups[1].Value) == null)
-                        {
-                            _root.AddChild(match.Groups[1].Value);
-                        }
-                    }
-                }
+                DIT = Math.Max(DIT, depth);
             }
 
+            return DIT;
+        }
+
+        private static int GetNOC(Assembly assembly)
+        {
+            var NOC = 0;
+            var assemblyTypes = assembly.GetTypes();
+
+            foreach (Type type in assemblyTypes)
+            {
+                NOC = Math.Max(NOC, assemblyTypes.Count(t => type.Equals(t.BaseType)));
+            }
+
+            return NOC;
+        }
+
+        private static decimal GetMHF(Assembly assembly)
+        {
+            /*
+                Mv – количество видимых методов в классе, 
+                Mh – количество скрытых методов класса,
+            */
+            int Mv = 0;
+            int Mh = 0;
+
+            foreach (Type type in assembly.GetTypes())
+            {
+                Mv += type.GetMethods(/*BindingFlags.DeclaredOnly*/).Count();
+                Mh += type.GetMethods(/*BindingFlags.DeclaredOnly | */BindingFlags.NonPublic | BindingFlags.Instance |
+                        BindingFlags.Static)
+                    .Count();
+            }
+
+            var allMethods = Mh + Mv;
+
+            return allMethods != 0 ? (decimal)Mh / allMethods : 0;
+        }
+
+        private static decimal GetAHF(Assembly assembly)
+        {
+            /*
+                Ah - количество скрытых атрибутов класса (интерфейс класса), 
+                Ad – общее количество атрибутов, определенных в классе (без учета унаследованных), 
+            */
+            int Ad = 0;
+            int Ah = 0;
+
+            foreach (Type type in assembly.GetTypes())
+            {
+                Ad += type.GetFields(BindingFlags.DeclaredOnly | BindingFlags.Static |
+                        BindingFlags.Public | BindingFlags.NonPublic |
+                        BindingFlags.Static | BindingFlags.Instance)
+                    .Count();
+                Ah += type.GetFields(/*BindingFlags.DeclaredOnly | */BindingFlags.NonPublic | BindingFlags.Static |
+                        BindingFlags.Instance)
+                    .Count();
+            }
+
+            return Ad != 0 ? (decimal)Ah / Ad : 0;
+        }
+
+        private static decimal GetMIF(Assembly assembly)
+        {
+            /*
+                Mi - количество унаследованых и не переопределенных методов класса,
+                Ma - количество всех методов, доступных в классе.
+            */
+            int Ma = 0;
+            int Mi = 0;
+
+            foreach (Type type in assembly.GetTypes())
+            {
+                Ma += type.GetMethods(/*BindingFlags.DeclaredOnly | */BindingFlags.NonPublic | BindingFlags.Instance |
+                        BindingFlags.Static | BindingFlags.Public)
+                    .Count();
+                Mi += type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic |
+                        BindingFlags.Instance | BindingFlags.Static |
+                        BindingFlags.FlattenHierarchy)
+                    .Where(m => m.DeclaringType != type && m.GetBaseDefinition() != m)
+                    .Count();
+            }
+
+            return Ma != 0 ? (decimal)Mi / Ma : 0;
+        }
+
+        private static decimal GetAIF(Assembly assembly)
+        {
+            /*
+                Ai- количество унаследованых и не переопределенных атрибутов класса, 
+                Aa – общее количество атрибутов, определенных в классе,
+            */
+            int Aa = 0;
+            int Ai = 0;
+
+            foreach (Type type in assembly.GetTypes())
+            {
+                Aa += type.GetFields(BindingFlags.DeclaredOnly | BindingFlags.Static |
+                    BindingFlags.Public | BindingFlags.NonPublic |
+                    BindingFlags.Static | BindingFlags.Instance)
+                .Count();
+                Ai += type.GetFields(BindingFlags.Public | BindingFlags.NonPublic |
+                        BindingFlags.Instance | BindingFlags.Static |
+                        BindingFlags.FlattenHierarchy)
+                    .Where(f => type.GetField(f.Name, BindingFlags.DeclaredOnly |
+                        BindingFlags.Public | BindingFlags.NonPublic |
+                        BindingFlags.Instance | BindingFlags.Static) == null)
+                    .Count(); ;
+            }
+
+            return Aa != 0 ? (decimal)Ai / Aa : 0;
+        }
+
+        private static decimal GetPOF(Assembly assembly)
+        {
+            /*
+                Mo -количество унаследованых и переопределенных методов класса,
+                Mn -количество новых методов, доступных в классе,
+                DC - количество потомков класса 
+            */
+            var Mo = 0;
+            var Mn = 0;
+            var DC = 0;
+            var assemblyTypes = assembly.GetTypes();
+
+            foreach (Type type in assemblyTypes)
+            {
+                Mo += type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic |
+                        BindingFlags.Instance | BindingFlags.Static |
+                        BindingFlags.FlattenHierarchy)
+                    .Where(m => m.GetBaseDefinition() != m && m.DeclaringType == type)
+                    .Count();
+                Mn += type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic |
+                        BindingFlags.Instance | BindingFlags.Static |
+                        BindingFlags.DeclaredOnly)
+                    .Where(m => m.GetBaseDefinition() == m)
+                    .Count();
+                DC += assemblyTypes.Count(t => type.Equals(t.BaseType));
+            }
+
+            return Mn == 0 || DC == 0 ? 0 : (decimal)Mo / (Mn * DC);
+        }
+
+        public static Metrics GetAssemblyMetrics(Assembly assembly)
+        {
+            return new Metrics
+            {
+                DIT = GetDIT(assembly),
+                NOC = GetNOC(assembly),
+                MHF = GetMHF(assembly),
+                AHF = GetAHF(assembly),
+                MIF = GetMIF(assembly),
+                AIF = GetAIF(assembly),
+                POF = GetPOF(assembly)
+            };
         }
     }
 }
